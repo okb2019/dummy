@@ -7,7 +7,14 @@
 #include <NTPClient.h>
 #include <ArduinoJson.h>
 #include <ArduinoQueue.h>
-#include "main.h"
+#include <AFArray.h>
+#include "maindef.h"
+
+struct clientliste {
+  char nnc[10];     //netnodeclient numbers
+  char topic[128];  //der Topic dazu
+  char json[400];  //jason zum Topic
+};
 
 //#define DEBUG
 
@@ -59,23 +66,6 @@ int value = 0;
 #define LED_PIN_MR        33 //MQTT Empf ok
 
 #define QUEUE_SIZE_ITEMS 20
-
-
-
-struct data_transfer {
-	uint8_t 	client_id;
-	uint8_t		command;
-	uint8_t		type;
-	char		payload[58];
-};
-
-struct datenspeicher {
-  uint16_t sender_id;
-  int16_t RSSI;
-  struct data_transfer paket;
-};
-
-
 // Queue creation:
 ArduinoQueue<datenspeicher> StructQueue(QUEUE_SIZE_ITEMS);
 
@@ -94,6 +84,9 @@ NTPClient timeClient(ntpUDP, ntpip);
 struct data_transfer my_data;
 struct datenspeicher my_datenspeicher;
 
+
+AFArray<clientliste> myClientList;
+
 void Blink(uint8_t , int);
 void callback(char*, byte*, unsigned int);
 void setup_wifi(void);
@@ -102,6 +95,7 @@ bool Send_Payload(const char*, const char*, const char*);
 void process_message_data(datenspeicher&);
 void process_message_device(datenspeicher&);
 void process_message_request(data_transfer&, uint16_t);
+void process_device_update(datenspeicher&);
 bool Send_To_MQTT(char*, char*, bool );
 bool Send_To_MQTT(char*, char* );
 void process_queue(void);
@@ -354,6 +348,9 @@ void process_queue(void)
       case C_REQ:
         //process_message_request();
         break;
+      case C_UPDATE:
+      process_device_update(datendummy);
+        break;
       default:
         break;
     }
@@ -429,16 +426,22 @@ void process_message_data(datenspeicher &data)
   Send_To_MQTT(topicbuffer, myonline );
 }
 
+
 void process_message_device(datenspeicher &data)
 {
-  char buffer[500]; // fuer das MQTT Payload
-  char topicbuffer[128]; // fuer MQTT Topic  
+  char buffer[500];       // fuer das MQTT Payload
+  char topicbuffer[128];  // fuer MQTT Topic  
+  char subdatatopic[10];      // fuer den festen Bestandteil
+  clientliste clarray;
   char *clname;
-  char *nodename;
-  char *version;
+  char *clnameteil2;
+  char *clnameteil3;
+  int indexnummer = -1;
+  int lauf = 0;
+
   clname = strtok(data.paket.payload,";");
-  nodename = strtok(NULL,";");
-  version = strtok(NULL, ";");
+  clnameteil2 = strtok(NULL,";");               //nodename bei dem Node selber, oder min wert bei dem Client
+  clnameteil3 = strtok(NULL, ";");              //version bei dem Node selber, oder max wert bei dem Client
 
   StaticJsonDocument<400>  JSONbuffer;                  // Daten String zum senden den den MQTT Server 
   
@@ -446,21 +449,23 @@ void process_message_device(datenspeicher &data)
   JsonObject mqtt_buffer = JSONbuffer.to<JsonObject>();
   JsonObject rfm69device = mqtt_buffer.createNestedObject("dev");
   JsonArray rfm69ident = rfm69device.createNestedArray("identifiers");
-  
-  snprintf(topicbuffer, 50, "%s/%s/%03d%03d%03d/config",MQTT_DEVICE_URL,device_type[data.paket.type].name, NETWORKID, data.sender_id, data.paket.client_id);
+  //ist bei vielen gleich
+  snprintf(subdatatopic, 10, "%03d%03d%03d", NETWORKID, data.sender_id, data.paket.client_id );
+
+
+  //Das Topic zusammenbauen
+  snprintf(topicbuffer, 50, "%s/%s/%s/config",MQTT_DEVICE_URL,device_type[data.paket.type].name, subdatatopic);
   
   #ifdef DEBUG
     Serial.println(topicbuffer);   
   #endif
 
-    
-    
   mqtt_buffer["name"] = clname;
   
-  snprintf(buffer, 50, "%s/%03d%03d%03d/stat", MQTT_DATA_URL,NETWORKID, data.sender_id, data.paket.client_id);
+  snprintf(buffer, 50, "%s/%s/stat", MQTT_DATA_URL,subdatatopic);
   mqtt_buffer["stat_t"] = buffer;
   
-  snprintf(buffer, 50, "%s/%03d%03d%03d/avail", MQTT_DATA_URL,NETWORKID, data.sender_id, data.paket.client_id);
+  snprintf(buffer, 50, "%s/%s/avail", MQTT_DATA_URL,subdatatopic);
   mqtt_buffer["avty_t"] = buffer;
 
   mqtt_buffer["pl_avail"] =  "online";
@@ -472,12 +477,12 @@ void process_message_device(datenspeicher &data)
   //  mqtt_buffer["dev_cl"] = dev_cla[clinfo1.dev_cl].name;
   //}
 
-  snprintf(buffer, 50, "%.5s%03d%03d%03d",device_type[data.paket.type].name,NETWORKID, data.sender_id, data.paket.client_id);
+  snprintf(buffer, 50, "%.5s%s",device_type[data.paket.type].name,subdatatopic);
   mqtt_buffer["unique_id"] = buffer;
   
   if(data.paket.type != S_SENSOR ){ // Sensoren haben kein cmd
     
-    snprintf(buffer, 50, "%s/%03d%03d%03d/cmd", MQTT_DATA_URL,NETWORKID, data.sender_id, data.paket.client_id);
+    snprintf(buffer, 50, "%s/%s/cmd", MQTT_DATA_URL,subdatatopic);
     mqtt_buffer["cmd_t"] = buffer;
   }
   else {
@@ -485,6 +490,8 @@ void process_message_device(datenspeicher &data)
       Serial.println(" Kein CMD ");
     #endif
   }
+
+  
 /*
   if(clinfo1.sta_cl == 14) // Cover haben ein position_topic
   {
@@ -495,8 +502,8 @@ void process_message_device(datenspeicher &data)
   //if(clinfo1.unit_of_m >= 0)  
   //  mqtt_buffer["unit_of_meas"] = unit_of_meas[clinfo1.unit_of_m].name;
   
-  rfm69device["name"] = nodename;
-  snprintf(buffer,50,"%.5s%03d%03d",nodename,NETWORKID, data.sender_id, data.paket.client_id);
+  rfm69device["name"] = clnameteil2;
+  snprintf(buffer,50,"%.5s%s",clnameteil2,subdatatopic);
   rfm69ident.add(buffer);
   
   serializeJson(mqtt_buffer, buffer);
@@ -507,7 +514,65 @@ void process_message_device(datenspeicher &data)
     serializeJsonPretty(mqtt_buffer, Serial);
   #endif
   Blink(LED_PIN_RR,3);
+
+  while (indexnummer == -1 && lauf < myClientList.size())
+  {
+    clarray = myClientList[lauf];
+    if(strcmp(clarray.nnc, subdatatopic) == 0)
+      indexnummer = lauf;
+  }
+
+  if(indexnummer == -1)
+  {
+    strcpy(clarray.nnc, subdatatopic);
+    strcpy(clarray.topic, topicbuffer);
+    strcpy(clarray.json, buffer);
+    myClientList.add(clarray);
+    JsonDocument doc;
+    deserializeJson(doc, buffer);
+    Serial.printf("Neues Element:\n");
+    serializeJsonPretty(doc, Serial);
+  }
 }
+
+void process_device_update(datendummy &data)
+{
+  char buffer[500];       // fuer das MQTT Payload
+  char topicbuffer[128];  // fuer MQTT Topic  
+  char subdatatopic[10];      // fuer den festen Bestandteil
+  clientliste clarray;
+  char *clname;
+  char *clwert;
+  int indexnummer = -1;
+  int lauf = 0;
+
+  clname = strtok(data.paket.payload,";");  //Was soll hinzugefügt werden
+  clwert = strtok(NULL,";");                //der Wert dazu
+  
+
+  JsonDocument jsondoc;                       // Daten String zum senden den den MQTT Server 
+
+  snprintf(subdatatopic, 10, "%03d%03d%03d", NETWORKID, data.sender_id, data.paket.client_id );  
+  while (indexnummer == -1 && lauf < myClientList.size())
+  {
+    clarray = myClientList[lauf];
+    if(strcmp(clarray.nnc, subdatatopic) == 0)
+      indexnummer = lauf;
+  }
+  if(indexnummer == -1)
+  {
+    strcpy(subdatatopic, clarray.nnc);
+    strcpy(topicbuffer, clarray.topic);
+    strcpy(buffer, clarray.json);
+    deserializeJson(jsondoc, buffer);
+    serializeJsonPretty(doc, Serial);
+  }
+  jsondoc[clname] = clwert;
+  serializeJson(jsondoc, buffer);
+  strncpy(clarray.json, buffer, 400);
+  Send_To_MQTT(topicbuffer, buffer, true); 
+  myClientList[lauf] = clarry;
+
 void process_message_request(data_transfer &data, uint16_t sender_id)
 {
 
