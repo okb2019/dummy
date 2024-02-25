@@ -76,14 +76,13 @@ ArduinoQueue<datenspeicher> StructQueue(QUEUE_SIZE_ITEMS);
 #endif
 
 
-
 IPAddress ntpip(192,168,178,1);
 WiFiUDP ntpUDP;
 NTPClient timeClient(ntpUDP, ntpip);
 
 struct data_transfer my_data;
 struct datenspeicher my_datenspeicher;
-
+const char* mysqldata = "Callback function called";
 
 AFArray<clientliste> myClientList;
 
@@ -104,6 +103,7 @@ WiFiClient espClient;
 PubSubClient client(mqtt_server, 1883, callback, espClient);
 
 void setup() {
+  int rc;
   Serial.begin(SERIAL_BAUD);
   delay(1000);
   Serial.println("bla");
@@ -128,8 +128,9 @@ void setup() {
   pinMode(LED_PIN_MR, OUTPUT);
   
   delay(1000);
-
+  
   setup_wifi();
+
 }
 
 void loop() {
@@ -299,14 +300,14 @@ void Process_RFM69_Message()
     datendummy.paket = *(data_transfer*)radio.DATA;
     datendummy.RSSI = radio.readRSSI();
     if (!StructQueue.isFull()) {
-    #ifdef DEBUG  
+    //#ifdef DEBUG  
       Serial.printf("Adding value from : %d %d ", radio.SENDERID, datendummy.paket.client_id);
-    #endif
+    //#endif
       StructQueue.enqueue(datendummy);
       if (radio.ACKRequested())
       {
         radio.sendACK();
-      //  Serial.println(" - ACK sent");
+        Serial.println(" - ACK sent");
         delay(10);
       }
     }  
@@ -340,16 +341,19 @@ void process_queue(void)
     switch(datendummy.paket.command)
     {
       case C_SET:
+        Serial.printf("Processing C_SET\n");
         process_message_data(datendummy);
         break;
       case C_PRESENTATION:
+        Serial.printf("Processing C_PRESENTATION\n");
         process_message_device(datendummy);
         break;
       case C_REQ:
         //process_message_request();
         break;
       case C_UPDATE:
-      process_device_update(datendummy);
+        Serial.printf("Processing C_UPDATE\n");      
+      //process_device_update(datendummy);
         break;
       default:
         break;
@@ -437,7 +441,7 @@ void process_message_device(datenspeicher &data)
   char *clnameteil2;
   char *clnameteil3;
   int indexnummer = -1;
-  int lauf = 0;
+  int lauf = 0, rc;
 
   clname = strtok(data.paket.payload,";");
   clnameteil2 = strtok(NULL,";");               //nodename bei dem Node selber, oder min wert bei dem Client
@@ -456,9 +460,9 @@ void process_message_device(datenspeicher &data)
   //Das Topic zusammenbauen
   snprintf(topicbuffer, 50, "%s/%s/%s/config",MQTT_DEVICE_URL,device_type[data.paket.type].name, subdatatopic);
   
-  #ifdef DEBUG
+ // #ifdef DEBUG
     Serial.println(topicbuffer);   
-  #endif
+ // #endif
 
   mqtt_buffer["name"] = clname;
   
@@ -490,7 +494,7 @@ void process_message_device(datenspeicher &data)
       Serial.println(" Kein CMD ");
     #endif
   }
-
+  Serial.printf("Device ok.\n");
   
 /*
   if(clinfo1.sta_cl == 14) // Cover haben ein position_topic
@@ -514,28 +518,34 @@ void process_message_device(datenspeicher &data)
     serializeJsonPretty(mqtt_buffer, Serial);
   #endif
   Blink(LED_PIN_RR,3);
-
+/* 
+//    Serial.printf("Array : %s Aktuell m: %s\n",clarray.nnc,subdatatopic);
+  Serial.printf("suche nach bekannten Cients..\n");
   while (indexnummer == -1 && lauf < myClientList.size())
   {
     clarray = myClientList[lauf];
+    Serial.printf("Index : %d, lauf : %d, Array : %s Aktuell m: %s\n",indexnummer, lauf, clarray.nnc, subdatatopic);
     if(strcmp(clarray.nnc, subdatatopic) == 0)
+    {
       indexnummer = lauf;
-  }
-
+      Serial.printf("Match found!");
+    }
+    lauf++;
+  } 
   if(indexnummer == -1)
   {
-    strcpy(clarray.nnc, subdatatopic);
-    strcpy(clarray.topic, topicbuffer);
-    strcpy(clarray.json, buffer);
+    strncpy(clarray.nnc, subdatatopic,10);
+    strncpy(clarray.topic, topicbuffer, 128);
+    strncpy(clarray.json, buffer,400);
+    Serial.printf("Fuege neuen Client hinzu\n");
     myClientList.add(clarray);
-    JsonDocument doc;
-    deserializeJson(doc, buffer);
-    Serial.printf("Neues Element:\n");
-    serializeJsonPretty(doc, Serial);
+    Serial.printf("Neues Element: %s\n",buffer);
+    
   }
+*/  
 }
 
-void process_device_update(datendummy &data)
+void process_device_update(datenspeicher &data)
 {
   char buffer[500];       // fuer das MQTT Payload
   char topicbuffer[128];  // fuer MQTT Topic  
@@ -557,23 +567,31 @@ void process_device_update(datendummy &data)
   {
     clarray = myClientList[lauf];
     if(strcmp(clarray.nnc, subdatatopic) == 0)
+    {
       indexnummer = lauf;
+      Serial.printf("Match found!");
+    }
+    Serial.printf("Update - Array : %s Aktuell : %s\n",clarray.nnc,subdatatopic);
+    lauf++;
   }
-  if(indexnummer == -1)
+  if(indexnummer >= 0)
   {
     strcpy(subdatatopic, clarray.nnc);
     strcpy(topicbuffer, clarray.topic);
     strcpy(buffer, clarray.json);
     deserializeJson(jsondoc, buffer);
-    serializeJsonPretty(doc, Serial);
+    serializeJsonPretty(jsondoc, Serial);
+    jsondoc[clname] = clwert;
+    serializeJson(jsondoc, buffer);
+    strncpy(clarray.json, buffer, 400);
+    serializeJsonPretty(jsondoc, Serial);
+    Send_To_MQTT(topicbuffer, buffer, true); 
+    myClientList[lauf] = clarray;
   }
-  jsondoc[clname] = clwert;
-  serializeJson(jsondoc, buffer);
-  strncpy(clarray.json, buffer, 400);
-  Send_To_MQTT(topicbuffer, buffer, true); 
-  myClientList[lauf] = clarry;
+}
 
 void process_message_request(data_transfer &data, uint16_t sender_id)
 {
 
 }
+
